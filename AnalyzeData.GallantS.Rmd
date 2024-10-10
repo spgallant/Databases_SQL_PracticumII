@@ -1,0 +1,176 @@
+---
+title: "Practicum II CS5200 - Analyze Sales Data"
+author: "Sarah Gallant"
+date: "Summer Full 2023"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+
+## Purpose
+This report exists to examine the most successful "Top 5" sales representatives based on their aggregate sales, and further considers the overall sales figures across all sales representatives for all available years of data in terms of quarterly sales. This report intends to be informative with respect to the data sources and methods used to extract the exhibited data as a tool for future updates and expansion.
+
+
+## Background & Data Sources
+The origin of the data in this report is a series of data files in XML format ultimately supplied by leadership. These include a listing of the entire sales team with rep ID number, name, and territory, along with a multitude of transaction files which include a transaction ID number as well as information regarding date, customer, product, quantity sold, amount sold, customer's country, and corresponding sales representative.
+
+This information was used for the creation of a SQLite-based normalized database capturing all data. Select data was then loaded as part of an Extract-Load-Transform (ETL) process into specific MySQL-based de-normalized fact tables capturing product facts and sales rep facts designed in a star schema with dimension tables to allow for faster analysis with respect to total sales. The fact tables were then queried in accordance with the outlined purpose to explore sales information. 
+
+The dates in this data were represented as a full month/day/year date in the normalized database, but were converted to specific fields for year and quarter in the date dimension table used by the fact tables. This dimension table represented combinations of a given year and quarter, a given year and all quarters, and all years and all quarters to allow for higher date categories in the slicing of the data. Other data fields were manipulated in the transformation from XML file to star schema, but they may be considered minor.
+
+Below, you will see the pre-work for the queries in this report. This includes the clearing of the programming workspace, followed by the database connection providing access to the fact and dimension tables used for querying the sales data.
+
+```{r clear_workspace}
+rm(list = ls()) 
+```
+
+
+```{r connect_to_DB, eval = T, warning = F}
+# 1. Library
+library(RMySQL)
+
+# 2. Settings freemysqlhosting.net (max 5MB)
+db_name_fh <- "sql9626210"
+db_user_fh <- "sql9626210"
+db_host_fh <- "sql9.freemysqlhosting.net"
+db_pwd_fh <- "prjFNVd1Xf"
+db_port_fh <- 3306
+
+# 3. Connect to remote server database
+mydb.fh <-  dbConnect(RMySQL::MySQL(), user = db_user_fh, password = db_pwd_fh,
+                      dbname = db_name_fh, host = db_host_fh, port = db_port_fh)
+
+mydb <- mydb.fh
+```
+
+
+## Anlytical Query I - Top 5 Sales reps with most sales broken down by year
+The query below gathers our data to consider who the top 5 sales representatives were based on total sales regardless of year, and then reports the yearly sales information for that "Top Rep" group. The query selects the name of the representative, each year of available sales data for that sales representative, and the total amount of sales they had in terms of a normalized currency. This information is pulled from our rep_facts fact table joined with not only its dimension tables as part of that star schema, but with a sub-query identifying the repIDs for just those top 5 reps. From there, the query limits the data to show the year total data agnostic of quarter and product, and both groups and orders the results by the sales representative and the year of reported data. The data extracted from this query is expressed below in the chart titled "Yearly Sales Data for Top 5 Sales Reps".
+
+```{r query_top_5_reps, warning =F}
+
+result <- dbGetQuery(mydb, "
+            SELECT r.repName, d.year, s.totalSold
+              FROM rep_facts AS s
+              JOIN date_dim AS d ON (s.time_key = d.timeID)
+              JOIN product_dim AS p ON (s.product_key = p.productID)
+              JOIN rep_dim AS r ON (s.rep_key = r.repID)
+              JOIN (
+                  SELECT s.rep_key
+                  FROM rep_facts AS s
+                  JOIN date_dim AS d ON (s.time_key = d.timeID)
+                  JOIN product_dim AS p ON (s.product_key = p.productID)
+                  JOIN rep_dim AS r ON (s.rep_key = r.repID)
+                  WHERE quarter = 'ALL' AND year = 'ALL' AND productName = 'ALL' 
+                    AND repName != 'ALL'
+                  ORDER BY s.totalSold DESC
+                  LIMIT 5
+              ) AS top_reps ON s.rep_key = top_reps.rep_key
+              WHERE quarter = 'ALL' AND year != 0 AND productName = 'ALL'
+              GROUP BY r.repName, d.year
+              ORDER BY r.repName, d.year;
+
+            ")
+            
+```
+
+The bar chart below displays the yearly sales for each of the top 5 sales representatives. The legend indicates the color representation of the bar corresponding to a given year, and the per year information for each sales rep is clustered with data labels. These features allow for precise consideration both by rep in terms of year-over-year sales, and per year across sales reps.
+
+Based on current data at the time of this report, the top 5 sales reps include the following: Aneeta Kappoorthy, Walison da Silva, Helmut Schwab, Lynette McRowe, and Prasad Patel. There is a large variance (3.4M) in the total sold between the highest and lowest performers in the group of top 5 reps. 
+```{r express_top5reps}
+
+# Load ggplot library
+library(ggplot2)
+
+#set y-axis scale from totalSold so that data labels won't be cut off
+y_limit <- (max(result$totalSold) * 1.1)
+
+#set increment for y-axis
+numSegments <- 10 #tick mark count
+y_increment <- ceiling(y_limit / (numSegments * 5000)) * 5000 #increments of 5K
+
+# Create the bar chart
+ggplot(result, aes(x = repName, y = totalSold, 
+                   fill = as.factor(year))) + #data source & mapping for bar chart
+  geom_bar(stat = "identity", position = "dodge") + #chart type and layout
+  scale_fill_brewer(palette = "Paired") + #color scheme
+  geom_text(aes(label = scales::comma(totalSold)), position = position_dodge(width = 0.9),
+          vjust = -0.5, size = 3.1) + #bar data labels w/ size, position, grouping
+  labs(title = "Yearly Sales Data for Top 5 Sales Reps", #title & axis labels
+       x = "Sales Representative",
+       y = "Total Sold",
+       fill = "Year") +
+  theme_minimal() + #standard to allow for additions
+  theme(plot.title = element_text(hjust = 0.5),  # Center the title
+        legend.position = "top", #legend location
+        legend.key.size = unit(0.4, "cm")) + #size legend
+  scale_y_continuous(labels = scales::comma_format(),
+                     breaks = seq(0, y_limit, y_increment)) #increments for y-axis
+
+
+
+```
+
+
+
+
+## Anlytical Query II - Total sold per quarter 
+Note: Leadership allows for quarterly or monthly breakdown of sales data based on what is available (see Teams). This query allows for quarterly data.
+
+The query below gathers data to consider total sales in terms of a normalized currency per quarter of available data. The query selects the timeID, which shows a specific year-quarter combination but which is represented here as 'Quarter', and the total sold from the product_facts fact table joined with its dimension tables as part of a star schema. The query then limits the data to show the quarters for all available years agnostic of region and product. The data extracted from this query is expressed below in the chart titled "Total Sold per Quarter".
+
+```{r query_total_sold_per_year, warning =F}
+# execute sql query with result in data frame
+result2 <- dbGetQuery(mydb, "
+            SELECT d.timeID as 'Quarter', f.totalSold
+            FROM product_facts AS f
+              JOIN date_dim AS d ON (f.time_key = d.timeID)
+              JOIN region_dim AS r ON (f.region_key = r.regionID)
+              JOIN product_dim AS p ON (f.product_key = p.productID)
+            WHERE quarter != 'ALL' AND year != '0' AND regionName = 'ALL' 
+              AND productName = 'ALL'")
+```
+
+
+The line chart below displays the total amount sold per quarter. The bullet points on the graph correspond to the specific amount sold per quarter in the data, with the quarter noted on the x-axis and the total sold increments on the y-axis. Each data point also contains a label to allow for precise comparison of quarterly sales. There is no legend as the one measure, total sold, is expressed by one line with the relevant comparison visible through the data bullets.
+
+Based on current data at the time of this report, the total sales figure is 17,689,154 with 2020-Q2 yielding the highest sales of 4.8M and 2020-Q1 yielding the lowest sales of 3.9M. 
+```{r express_total_sold}
+
+library(ggplot2)
+
+#find y-axis scale from totalSold
+y_limit <- (max(result2$totalSold) * 1.2)
+
+
+# Create the line graph
+ggplot(result2, aes(x = Quarter, y = totalSold, group = 1)) + #data src & map
+  geom_line(color = "lightblue") + #color line
+  geom_point(color = "lightblue", size = 3) + #color bullet
+  geom_text(aes(label = scales::comma(totalSold)), 
+            position = position_nudge(y = 220000), size = 3.1) + #data labels, size
+  labs(title = "Total Sold Per Quarter",
+       x = "Quarter",
+       y = "Total Sold") +
+  theme_minimal() + #standard to allow for additions
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "none") + #title & no legend
+  scale_y_continuous(labels = scales::comma_format(), #format y-axis
+                     limits = c(0, y_limit)) 
+
+
+```
+
+
+## Conclusion
+In conclusion, this report explores sales data in terms of both the annual sales for a group of the top 5 sales representatives and the total sold per quarter for all reps. This information was sourced with SQL queries against fact tables focused on analysis of total sold, which were populated with an ETL load from a normalized database. The normalized database was built with data contained in XML files for sales rep and transaction data. 
+
+The data explored in this report is represented through two analytical queries, which have corresponding charts to provide a graphical representation of the results.
+
+
+```{r disconnect_db, eval = T, warning = F}
+status <-dbDisconnect(mydb.fh) #disconnect from the db
+```
+
